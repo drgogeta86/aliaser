@@ -22,7 +22,7 @@ fi
 #case $ETHINT in 
 
 function mac-grab {
-	MAC_ADDR=$(ifconfig eth0 | sed -n 's/.*ether \([a-f0-9:]*\).*/\1/p')
+	MAC_ADDR=$(ip addr | grep -m 1 -A2 eth0 | awk '/ether/ {print $2}')
 }
 
 function public-grab {
@@ -41,8 +41,12 @@ function private-loop {
 	for priv in ${PRIVATE[@]:1};
         do
                 echo "Adding IP: $priv"
-                ip addr add dev eth0 $priv/20
+                ip addr add dev eth0 $priv/$MASK
         done
+}
+
+function mask-grab {
+	MASK=$(curl http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block | awk -F/ '{print $2}')
 }
 
 case "$1" in
@@ -62,6 +66,7 @@ conditions - see LICENSE for details.\n\n"
         ;;
 
 'start') mac-grab
+	mask-grab
 	private-grab
 	private-loop
 	;;
