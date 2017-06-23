@@ -1,4 +1,6 @@
 #!/bin/bash
+# chkconfig: 2345 70 25
+# description: Setup Secondary IP 
 
 # ----
 # Resolve issues with IP aliasing for Amazon EC2 linux virtual machines
@@ -14,15 +16,79 @@ then
         exit
 fi
 
-#echo -n "What is the name of the network alias you would like to bind secondary IPs to? (eth0, eth1, etc): "
-#read interface
-#printf "\n"
-#declare -a ETHINT=($interface)
+ARGV1=$1
 
-#case $ETHINT in 
+function all-nic {
+
+if [ $ARGV1 == "cloudendure" ];then
+   for i in $(ls -d1 /sys/class/net/eth*)	
+	do
+	   ETHINT=$(basename $i)
+           mac-grab
+           mask-grab
+       	   private-grab
+           write-conf
+	done
+fi 
+
+   service network restart
+   for i in $(ls -d1 /sys/class/net/eth*)
+	do
+	   ETHINT=$(basename $i)
+	   mac-grab
+	   mask-grab
+           mask-grab
+	   private-grab
+   	   private-loop
+	done
+}
+
+function write-conf {
+
+# Eth0 need to be configured as DHCP ... the others not (F.Isgro 19/06/2017)
+if [ "$ETHINT" ==  "eth0" ];then
+
+cat << EOF > /etc/sysconfig/network-scripts/ifcfg-$ETHINT
+DEVICE=$ETHINT
+BOOTPROTO=dhcp
+ONBOOT=yes
+EOF
+
+else
+
+cat << EOF > /etc/sysconfig/network-scripts/ifcfg-$ETHINT
+DEVICE=$ETHINT
+BOOTPROTO=none
+ONBOOT=yes
+TYPE=Ethernet
+USERCTL=yes
+PEERDNS=yes
+IPV6INIT=no
+NETMASK=$NETMASK
+IPADDR=${PRIVATE[0]}
+EOF
+
+cat << EOF > /etc/sysconfig/network-scripts/route-$ETHINT
+default via $GATEWAY dev $ETHINT table admin
+$CIDR dev $ETHINT src ${PRIVATE[0]} table admin
+EOF
+
+
+cat << EOF > /etc/sysconfig/network-scripts/rule-$ETHINT
+from ${PRIVATE[0]}/32 table admin
+to ${PRIVATE[0]}/32 table admin
+EOF
+
+
+echo "1 admin" >> /etc/iproute2/rt_tables
+
+fi
+
+
+}
 
 function mac-grab {
-	MAC_ADDR=$(ip addr | grep -m 1 -A2 eth0 | awk '/ether/ {print $2}')
+MAC_ADDR=$(ip addr | grep -m 1 -A2 $ETHINT | awk '/ether/ {print $2}')
 }
 
 function public-grab {
@@ -41,12 +107,19 @@ function private-loop {
 	for priv in ${PRIVATE[@]:1};
         do
                 echo "Adding IP: $priv"
-                ip addr add dev eth0 $priv/$MASK
+                ip addr add dev $ETHINT $priv/$MASK
+		if [ "$ETHINT" !=  "eth0" ];then
+                   /sbin/ip -4 rule add from $priv/32 lookup admin
+                   /sbin/ip -4 rule add to $priv/32 lookup admin
+		fi
         done
 }
 
 function mask-grab {
+	CIDR=$(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block)
 	MASK=$(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block | awk -F/ '{print $2}')
+        NETMASK=$(ipcalc -m 10.10.0.0/$(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block | awk -F/ '{print $2}')| cut -f2 -d\=)	
+	GATEWAY=$(curl -s -f http://169.254.169.254/latest/meta-data/network/interfaces/macs/$MAC_ADDR/subnet-ipv4-cidr-block |  awk -F  "." '/1/ {print $1 "." $2 "." $3 ".1"}')
 }
 
 case "$1" in
@@ -65,10 +138,12 @@ welcome to redistribute it under certain
 conditions - see LICENSE for details.\n\n"
         ;;
 
-'start') mac-grab
-	mask-grab
-	private-grab
-	private-loop
+'start' | 'cloudendure') all-nic 
+	#mac-grab
+	#mask-grab
+	#private-grab
+	#private-loop
+	#write-conf
 	;;
 
 'restart') service network restart
@@ -106,3 +181,4 @@ conditions - see LICENSE for details.\n\n"
 *) printf "Invalid option - try $0 -h or $0 help for correct usage"
 	;;
 esac
+
